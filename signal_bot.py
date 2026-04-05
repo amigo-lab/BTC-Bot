@@ -25,7 +25,9 @@ STATE_FILE = Path("alert_state.json")
 # =========================
 def send_telegram(msg: str) -> None:
     if not TELEGRAM_TOKEN or not CHAT_ID:
-        raise ValueError("TELEGRAM_TOKEN 또는 CHAT_ID가 설정되지 않았습니다.")
+        raise ValueError(
+            f"환경변수 누락: TELEGRAM_TOKEN={bool(TELEGRAM_TOKEN)}, CHAT_ID={bool(CHAT_ID)}"
+        )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
@@ -34,10 +36,20 @@ def send_telegram(msg: str) -> None:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
+
     response = requests.post(url, data=data, timeout=20)
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
+
     response.raise_for_status()
+
+    try:
+        result = response.json()
+    except Exception as e:
+        raise RuntimeError(f"Telegram 응답 JSON 파싱 실패: {e}")
+
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram API error: {result}")
 
 
 # =========================
@@ -85,12 +97,10 @@ def fetch_ohlcv() -> pd.DataFrame:
 # 지표 계산
 # =========================
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
     df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
 
-    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -99,34 +109,28 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["rsi14"] = 100 - (100 / (1 + rs))
 
-    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-    # Bollinger Bands
     df["bb_mid"] = df["close"].rolling(20).mean()
     bb_std = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + (2 * bb_std)
     df["bb_lower"] = df["bb_mid"] - (2 * bb_std)
 
-    # Volume average
     df["vol_ma20"] = df["volume"].rolling(20).mean()
 
-    # ATR14
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr14"] = tr.rolling(14).mean()
 
-    # Recent structure
     df["recent_high_20"] = df["high"].rolling(20).max()
     df["recent_low_20"] = df["low"].rolling(20).min()
 
-    # Momentum
     df["close_change_3"] = df["close"].pct_change(3) * 100
     df["close_change_5"] = df["close"].pct_change(5) * 100
 
@@ -140,7 +144,7 @@ def calc_trade_levels(signal_type: str, last: pd.Series) -> dict:
     entry = float(last["close"])
     atr = float(last["atr14"]) if not pd.isna(last["atr14"]) else entry * 0.006
 
-    min_stop_pct = 0.0045  # 0.45%
+    min_stop_pct = 0.0045
     min_stop_distance = entry * min_stop_pct
     stop_distance = max(atr * 1.2, min_stop_distance)
 
@@ -175,7 +179,7 @@ def calc_trade_levels(signal_type: str, last: pd.Series) -> dict:
 # =========================
 # 점수 등급
 # =========================
-def get_grade(level: str, final_score: float, volume_ratio: float | None) -> str:
+def get_grade(level: str, final_score: float, volume_ratio) -> str:
     if level == "STRONG":
         if final_score >= 7.0 and volume_ratio is not None and volume_ratio >= 1.2:
             return "A+"
@@ -243,7 +247,6 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     bullish_trend = last["close"] > last["ema50"] > last["ema200"]
     bearish_trend = last["close"] < last["ema50"] < last["ema200"]
 
-    # 큰 추세
     if bullish_trend:
         score_long += 2.5
         long_reasons.append("상승 추세 정렬 (종가 > EMA50 > EMA200)")
@@ -256,7 +259,6 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     else:
         short_blockers.append("하락 추세 정렬 미충족")
 
-    # 단기 위치
     if last["close"] > last["ema20"]:
         score_long += 0.7
         long_reasons.append("단기 가격이 EMA20 위")
@@ -269,7 +271,6 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     else:
         short_blockers.append("단기 가격이 EMA20 위")
 
-    # RSI
     if 40 <= last["rsi14"] <= 52:
         score_long += 1.2
         long_reasons.append(f"RSI 눌림 후 회복 구간 ({last['rsi14']:.2f})")
@@ -284,7 +285,6 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         score_short += 0.7
         short_reasons.append(f"RSI 높은 구간 ({last['rsi14']:.2f})")
 
-    # MACD
     if prev["macd"] < prev["macd_signal"] and last["macd"] > last["macd_signal"]:
         score_long += 1.5
         long_reasons.append("MACD 골든크로스")
@@ -299,15 +299,14 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         score_short += 1.0
         short_reasons.append("MACD 하락 모멘텀 강화")
 
-    # 볼린저
     if last["close"] <= last["bb_lower"] * 1.012:
         score_long += 0.8
         long_reasons.append("볼린저 하단 근접")
+
     if last["close"] >= last["bb_upper"] * 0.988:
         score_short += 0.8
         short_reasons.append("볼린저 상단 근접")
 
-    # 최근 범위 위치
     recent_range = last["recent_high_20"] - last["recent_low_20"]
     position_in_range = None
     if recent_range > 0:
@@ -320,46 +319,41 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
             score_short += 0.5
             short_reasons.append("최근 20캔들 범위 상단권")
 
-    # 거래량
     volume_ratio = np.nan
     if pd.notna(last["vol_ma20"]) and last["vol_ma20"] > 0:
         volume_ratio = last["volume"] / last["vol_ma20"]
 
     if pd.notna(volume_ratio):
+        base_long = score_long
+        base_short = score_short
+
         if volume_ratio >= 1.2:
-            if score_long >= score_short:
+            if base_long >= base_short:
                 score_long += 1.2
                 long_reasons.append(f"거래량 증가 확인 (평균 대비 {volume_ratio:.2f}배)")
-            if score_short > score_long:
+            if base_short > base_long:
                 score_short += 1.2
                 short_reasons.append(f"거래량 증가 확인 (평균 대비 {volume_ratio:.2f}배)")
         elif volume_ratio >= 0.8:
-            if score_long >= score_short:
+            if base_long >= base_short:
                 score_long += 0.4
                 long_reasons.append(f"거래량 보통 수준 (평균 대비 {volume_ratio:.2f}배)")
-            if score_short > score_long:
+            if base_short > base_long:
                 score_short += 0.4
                 short_reasons.append(f"거래량 보통 수준 (평균 대비 {volume_ratio:.2f}배)")
         else:
             long_blockers.append(f"거래량 약함 (평균 대비 {volume_ratio:.2f}배)")
             short_blockers.append(f"거래량 약함 (평균 대비 {volume_ratio:.2f}배)")
 
-    # 가짜 반등 / 가짜 하락 필터
     long_fake_rebound = False
     if bullish_trend:
-        if (
-            (pd.notna(volume_ratio) and volume_ratio < 0.6)
-            and last["macd"] <= last["macd_signal"]
-        ):
+        if (pd.notna(volume_ratio) and volume_ratio < 0.6) and last["macd"] <= last["macd_signal"]:
             long_fake_rebound = True
             long_blockers.append("가짜 반등 가능성: 거래량 약하고 MACD 회복 미흡")
 
     short_fake_break = False
     if bearish_trend:
-        if (
-            (pd.notna(volume_ratio) and volume_ratio < 0.6)
-            and last["macd"] >= last["macd_signal"]
-        ):
+        if (pd.notna(volume_ratio) and volume_ratio < 0.6) and last["macd"] >= last["macd_signal"]:
             short_fake_break = True
             short_blockers.append("가짜 하락 가능성: 거래량 약하고 MACD 하락 확증 미흡")
 
@@ -415,7 +409,11 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         blockers.append(f"거래량 부족으로 강한신호 강등 (평균 대비 {volume_ratio:.2f}배)")
 
     levels = calc_trade_levels(signal_type, last)
-    grade = get_grade(signal_level, final_score, float(volume_ratio) if pd.notna(volume_ratio) else None)
+    grade = get_grade(
+        signal_level,
+        final_score,
+        float(volume_ratio) if pd.notna(volume_ratio) else None
+    )
     comment = build_market_comment({
         "signal": signal_type,
         "level": signal_level,
@@ -441,7 +439,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
 
 
 # =========================
-# 중복 알림 체크
+# 중복 알림 키
 # =========================
 def make_alert_key(result: dict) -> str:
     last = result["last"]
@@ -619,25 +617,32 @@ def main() -> None:
     df = add_indicators(df)
     result = evaluate_signal(df)
 
+    print("signal =", result["signal"])
+    print("level =", result["level"])
+    print("score_long =", result["score_long"])
+    print("score_short =", result["score_short"])
+
+    alert_key = make_alert_key(result)
+
+    if is_duplicate_alert(state, alert_key):
+        print("중복 알림이므로 전송하지 않음:", alert_key)
+        return
+
     if result["signal"] in ["LONG", "SHORT"]:
-        alert_key = make_alert_key(result)
-
-        if is_duplicate_alert(state, alert_key):
-            print("중복 알림이므로 전송하지 않음:", alert_key)
-            return
-
         msg = build_message(result)
-        send_telegram(msg)
-
-        state["last_alert_key"] = alert_key
-        state["last_signal"] = result["signal"]
-        state["last_level"] = result["level"]
-        state["last_grade"] = result["grade"]
-        state["last_candle_time"] = result["last"]["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC")
-        save_state(state)
-        print("새 알림 전송 완료:", alert_key)
     else:
-        print(build_no_signal_message(result))
+        msg = build_no_signal_message(result)
+
+    send_telegram(msg)
+
+    state["last_alert_key"] = alert_key
+    state["last_signal"] = result["signal"]
+    state["last_level"] = result["level"]
+    state["last_grade"] = result["grade"]
+    state["last_candle_time"] = result["last"]["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC")
+    save_state(state)
+
+    print("알림 전송 완료:", alert_key)
 
 
 if __name__ == "__main__":
