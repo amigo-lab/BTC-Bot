@@ -1,9 +1,12 @@
-name: BTC Multi Indicator Alert v2
+name: BTC VIP Briefing V4
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
 
 jobs:
   run-bot:
@@ -12,15 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Restore alert state cache
-        id: restore-alert-state
-        uses: actions/cache/restore@v4
         with:
-          path: alert_state.json
-          key: alert-state-${{ github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            alert-state-${{ github.ref_name }}-
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,9 +32,10 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python signal_bot.py
 
-      - name: Save alert state cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: alert_state.json
-          key: alert-state-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Commit updated alert state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add alert_state.json
+          git diff --cached --quiet || git commit -m "update alert state"
+          git push
