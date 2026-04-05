@@ -58,6 +58,7 @@ def send_telegram(msg: str) -> None:
 def load_state() -> dict:
     if not STATE_FILE.exists():
         return {}
+
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -97,10 +98,12 @@ def fetch_ohlcv() -> pd.DataFrame:
 # 지표 계산
 # =========================
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    # EMA
     df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
     df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
 
+    # RSI14
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -109,28 +112,34 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["rsi14"] = 100 - (100 / (1 + rs))
 
+    # MACD
     ema12 = df["close"].ewm(span=12, adjust=False).mean()
     ema26 = df["close"].ewm(span=26, adjust=False).mean()
     df["macd"] = ema12 - ema26
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
+    # Bollinger Bands
     df["bb_mid"] = df["close"].rolling(20).mean()
     bb_std = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + (2 * bb_std)
     df["bb_lower"] = df["bb_mid"] - (2 * bb_std)
 
+    # Volume average
     df["vol_ma20"] = df["volume"].rolling(20).mean()
 
+    # ATR14
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr14"] = tr.rolling(14).mean()
 
+    # Recent structure
     df["recent_high_20"] = df["high"].rolling(20).max()
     df["recent_low_20"] = df["low"].rolling(20).min()
 
+    # Momentum
     df["close_change_3"] = df["close"].pct_change(3) * 100
     df["close_change_5"] = df["close"].pct_change(5) * 100
 
@@ -144,7 +153,7 @@ def calc_trade_levels(signal_type: str, last: pd.Series) -> dict:
     entry = float(last["close"])
     atr = float(last["atr14"]) if not pd.isna(last["atr14"]) else entry * 0.006
 
-    min_stop_pct = 0.0045
+    min_stop_pct = 0.0045  # 0.45%
     min_stop_distance = entry * min_stop_pct
     stop_distance = max(atr * 1.2, min_stop_distance)
 
@@ -247,6 +256,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     bullish_trend = last["close"] > last["ema50"] > last["ema200"]
     bearish_trend = last["close"] < last["ema50"] < last["ema200"]
 
+    # 큰 추세
     if bullish_trend:
         score_long += 2.5
         long_reasons.append("상승 추세 정렬 (종가 > EMA50 > EMA200)")
@@ -259,6 +269,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     else:
         short_blockers.append("하락 추세 정렬 미충족")
 
+    # 단기 위치
     if last["close"] > last["ema20"]:
         score_long += 0.7
         long_reasons.append("단기 가격이 EMA20 위")
@@ -271,6 +282,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
     else:
         short_blockers.append("단기 가격이 EMA20 위")
 
+    # RSI
     if 40 <= last["rsi14"] <= 52:
         score_long += 1.2
         long_reasons.append(f"RSI 눌림 후 회복 구간 ({last['rsi14']:.2f})")
@@ -285,6 +297,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         score_short += 0.7
         short_reasons.append(f"RSI 높은 구간 ({last['rsi14']:.2f})")
 
+    # MACD
     if prev["macd"] < prev["macd_signal"] and last["macd"] > last["macd_signal"]:
         score_long += 1.5
         long_reasons.append("MACD 골든크로스")
@@ -299,14 +312,15 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         score_short += 1.0
         short_reasons.append("MACD 하락 모멘텀 강화")
 
+    # 볼린저
     if last["close"] <= last["bb_lower"] * 1.012:
         score_long += 0.8
         long_reasons.append("볼린저 하단 근접")
-
     if last["close"] >= last["bb_upper"] * 0.988:
         score_short += 0.8
         short_reasons.append("볼린저 상단 근접")
 
+    # 최근 범위 위치
     recent_range = last["recent_high_20"] - last["recent_low_20"]
     position_in_range = None
     if recent_range > 0:
@@ -319,6 +333,7 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
             score_short += 0.5
             short_reasons.append("최근 20캔들 범위 상단권")
 
+    # 거래량
     volume_ratio = np.nan
     if pd.notna(last["vol_ma20"]) and last["vol_ma20"] > 0:
         volume_ratio = last["volume"] / last["vol_ma20"]
@@ -342,20 +357,21 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
                 score_short += 0.4
                 short_reasons.append(f"거래량 보통 수준 (평균 대비 {volume_ratio:.2f}배)")
         else:
-            long_blockers.append(f"거래량 약함 (평균 대비 {volume_ratio:.2f}배)")
-            short_blockers.append(f"거래량 약함 (평균 대비 {volume_ratio:.2f}배)")
+            long_blockers.append(f"거래량 부족 ({volume_ratio:.2f}배)")
+            short_blockers.append(f"거래량 부족 ({volume_ratio:.2f}배)")
 
+    # 가짜 반등 / 가짜 하락 필터
     long_fake_rebound = False
     if bullish_trend:
         if (pd.notna(volume_ratio) and volume_ratio < 0.6) and last["macd"] <= last["macd_signal"]:
             long_fake_rebound = True
-            long_blockers.append("가짜 반등 가능성: 거래량 약하고 MACD 회복 미흡")
+            long_blockers.append("가짜 반등 가능성")
 
     short_fake_break = False
     if bearish_trend:
         if (pd.notna(volume_ratio) and volume_ratio < 0.6) and last["macd"] >= last["macd_signal"]:
             short_fake_break = True
-            short_blockers.append("가짜 하락 가능성: 거래량 약하고 MACD 하락 확증 미흡")
+            short_blockers.append("가짜 하락 가능성")
 
     signal_type = "NONE"
     signal_level = "NONE"
@@ -404,9 +420,10 @@ def evaluate_signal(df: pd.DataFrame) -> dict:
         reasons = short_reasons
         blockers = short_blockers
 
+    # 강한신호인데 거래량 부족하면 WATCH로 강등
     if signal_level == "STRONG" and pd.notna(volume_ratio) and volume_ratio < 0.8:
         signal_level = "WATCH"
-        blockers.append(f"거래량 부족으로 강한신호 강등 (평균 대비 {volume_ratio:.2f}배)")
+        blockers.append(f"거래량 부족 ({volume_ratio:.2f}배)")
 
     levels = calc_trade_levels(signal_type, last)
     grade = get_grade(
@@ -452,156 +469,199 @@ def is_duplicate_alert(state: dict, alert_key: str) -> bool:
 
 
 # =========================
-# 메시지 생성
+# 메시지 포맷
 # =========================
+def build_signal_insight(result: dict) -> str:
+    signal = result["signal"]
+    level = result["level"]
+    volume_ratio = result["volume_ratio"]
+
+    lines = []
+
+    if signal == "LONG":
+        lines.append("상승 추세 눌림 반등 시도")
+        if volume_ratio is not None:
+            if volume_ratio >= 1.2:
+                lines.append("→ 거래량 동반으로 신뢰도 양호")
+            elif volume_ratio >= 0.8:
+                lines.append("→ 거래량 보통, 추세 확인 필요")
+            else:
+                lines.append("→ 거래량 부족으로 확정 아님")
+
+        if level == "WATCH":
+            lines.append("→ 다음 캔들 확인 필요")
+        elif level == "STRONG":
+            lines.append("→ 손절 기준 지키며 진입 후보")
+
+    elif signal == "SHORT":
+        lines.append("하락 추세 반등 후 재차 약세 가능")
+        if volume_ratio is not None:
+            if volume_ratio >= 1.2:
+                lines.append("→ 거래량 동반으로 신뢰도 양호")
+            elif volume_ratio >= 0.8:
+                lines.append("→ 거래량 보통, 추세 확인 필요")
+            else:
+                lines.append("→ 거래량 부족으로 확정 아님")
+
+        if level == "WATCH":
+            lines.append("→ 다음 캔들 확인 필요")
+        elif level == "STRONG":
+            lines.append("→ 손절 기준 지키며 진입 후보")
+
+    else:
+        lines.append("현재는 승률 높은 진입 구간으로 보기 어려움")
+        if volume_ratio is not None and volume_ratio < 0.8:
+            lines.append("→ 거래량 부족으로 관망 우위")
+        else:
+            lines.append("→ 방향 확인 전까지 대기 권장")
+
+    return "\n".join(lines)
+
+
 def build_message(result: dict) -> str:
     last = result["last"]
     levels = result["levels"]
 
-    line = "<b>━━━━━━━━━━━━━━━━━━</b>"
-
+    line = "━━━━━━━━━━━━━━━━━━"
     candle_time = last["timestamp"].strftime("%Y-%m-%d %H:%M UTC")
-    volume_ratio_text = f"{result['volume_ratio']}배" if result["volume_ratio"] is not None else "계산불가"
-    range_pos_text = f"{result['position_in_range']}" if result["position_in_range"] is not None else "계산불가"
 
     entry = levels["entry"]
     stop = levels["stop"]
     target1 = levels["target1"]
     target2 = levels["target2"]
 
+    volume_ratio_text = f"{result['volume_ratio']}배" if result["volume_ratio"] is not None else "계산불가"
+    position_text = f"{result['position_in_range']}" if result["position_in_range"] is not None else "계산불가"
+
     if result["signal"] == "LONG":
         stop_move = f"-{levels['stop_pct']}%"
         t1_move = f"+{round(((target1 - entry) / entry) * 100, 2)}%"
         t2_move = f"+{round(((target2 - entry) / entry) * 100, 2)}%"
-    elif result["signal"] == "SHORT":
+    else:
         stop_move = f"-{levels['stop_pct']}%"
         t1_move = f"+{round(((entry - target1) / entry) * 100, 2)}%"
         t2_move = f"+{round(((entry - target2) / entry) * 100, 2)}%"
-    else:
-        stop_move = "-"
-        t1_move = "-"
-        t2_move = "-"
 
+    # 제목/배지는 level 기준으로 출력
     if result["signal"] == "LONG" and result["level"] == "STRONG":
-        title = "🚀 <b>BTC VIP LONG BRIEFING</b>"
-        signal_badge = "🟢 <b>강한 롱 신호</b>"
+        title = "🚀 BTC VIP LONG BRIEFING"
+        badge = "🟢 강한 롱 신호"
     elif result["signal"] == "LONG" and result["level"] == "WATCH":
-        title = "🟡 <b>BTC VIP WATCH BRIEFING</b>"
-        signal_badge = "🟡 <b>롱 관심 신호</b>"
+        title = "🟡 BTC VIP WATCH BRIEFING"
+        badge = "🟡 롱 관심 신호"
     elif result["signal"] == "SHORT" and result["level"] == "STRONG":
-        title = "🔻 <b>BTC VIP SHORT BRIEFING</b>"
-        signal_badge = "🔴 <b>강한 숏 신호</b>"
+        title = "🔻 BTC VIP SHORT BRIEFING"
+        badge = "🔴 강한 숏 신호"
     elif result["signal"] == "SHORT" and result["level"] == "WATCH":
-        title = "🟠 <b>BTC VIP WATCH BRIEFING</b>"
-        signal_badge = "🟠 <b>숏 관심 신호</b>"
+        title = "🟠 BTC VIP WATCH BRIEFING"
+        badge = "🟠 숏 관심 신호"
     else:
-        title = "ℹ️ <b>BTC VIP MARKET BRIEFING</b>"
-        signal_badge = "⚪️ <b>중립</b>"
+        title = "ℹ️ BTC VIP MARKET BRIEFING"
+        badge = "⚪️ 유효 신호 없음"
 
-    reasons_text = "\n".join([f"• {r}" for r in result["reasons"]]) if result["reasons"] else "• 없음"
-    blockers_text = "\n".join([f"• {b}" for b in result["blockers"]]) if result["blockers"] else "• 없음"
+    risk_lines = []
+    for b in result["blockers"]:
+        if "거래량" in b or "가짜" in b:
+            risk_lines.append(f"• {b}")
+
+    if not risk_lines:
+        risk_lines = ["• 특별한 리스크 경고 없음"]
+
+    insight = build_signal_insight(result)
 
     return (
         f"{title}\n"
         f"{line}\n"
-        f"{signal_badge} | 등급: <b>{result['grade']}</b>\n"
+        f"{badge} | 등급: {result['grade']}\n\n"
 
-        f"\n{line}\n"
-        f"💠 <b>Market Snapshot</b>\n"
         f"{line}\n"
-        f"• 종목: <b>{SYMBOL}</b>\n"
-        f"• 시간봉: <b>{TIMEFRAME}</b>\n"
-        f"• 캔들시간: <b>{candle_time}</b>\n"
-        f"• 현재가: <b>{last['close']:,.2f}</b>\n"
+        f"💠 Market Snapshot\n"
+        f"{line}\n"
+        f"• 종목: {SYMBOL}\n"
+        f"• 시간봉: {TIMEFRAME}\n"
+        f"• 캔들시간: {candle_time}\n"
+        f"• 현재가: {last['close']:,.2f}\n\n"
 
-        f"\n{line}\n"
-        f"📊 <b>Signal Score</b>\n"
         f"{line}\n"
-        f"• 최종 점수: <b>{result['final_score']}</b>\n"
-        f"• 롱 점수: <b>{result['score_long']}</b>\n"
-        f"• 숏 점수: <b>{result['score_short']}</b>\n"
-        f"• 신호 단계: <b>{result['level']}</b>\n"
+        f"📊 Signal Score\n"
+        f"{line}\n"
+        f"• 최종 점수: {result['final_score']}\n"
+        f"• 롱 점수: {result['score_long']}\n"
+        f"• 숏 점수: {result['score_short']}\n"
+        f"• 신호 단계: {result['level']}\n\n"
 
-        f"\n{line}\n"
-        f"📌 <b>Trade Plan</b>\n"
         f"{line}\n"
-        f"• 진입 기준가: <b>{entry:,.2f}</b>\n"
-        f"• 손절가: <b>{stop:,.2f}</b> ({stop_move})\n"
-        f"• 1차 목표가: <b>{target1:,.2f}</b> ({t1_move})\n"
-        f"• 2차 목표가: <b>{target2:,.2f}</b> ({t2_move})\n"
-        f"• 예상 RR(1차): <b>{levels['rr1']}</b>\n"
+        f"📌 Trade Plan\n"
+        f"{line}\n"
+        f"• 진입: {entry:,.2f}\n"
+        f"• 손절: {stop:,.2f} ({stop_move})\n"
+        f"• 목표1: {target1:,.2f} ({t1_move})\n"
+        f"• 목표2: {target2:,.2f} ({t2_move})\n"
+        f"• RR: {levels['rr1']}\n\n"
 
-        f"\n{line}\n"
-        f"📈 <b>Core Indicators</b>\n"
         f"{line}\n"
-        f"• RSI14: <b>{last['rsi14']:.2f}</b>\n"
-        f"• EMA20: <b>{last['ema20']:,.2f}</b>\n"
-        f"• EMA50: <b>{last['ema50']:,.2f}</b>\n"
-        f"• EMA200: <b>{last['ema200']:,.2f}</b>\n"
-        f"• MACD: <b>{last['macd']:.4f}</b>\n"
-        f"• MACD Signal: <b>{last['macd_signal']:.4f}</b>\n"
-        f"• ATR14: <b>{levels['atr']:.2f}</b>\n"
+        f"📈 Core Indicators\n"
+        f"{line}\n"
+        f"• RSI: {last['rsi14']:.2f}\n"
+        f"• EMA20 / 50 / 200: {last['ema20']:,.2f} / {last['ema50']:,.2f} / {last['ema200']:,.2f}\n"
+        f"• MACD: {last['macd']:.2f} / {last['macd_signal']:.2f}\n"
+        f"• ATR: {levels['atr']:.2f}\n\n"
 
-        f"\n{line}\n"
-        f"🔍 <b>Market Quality Check</b>\n"
         f"{line}\n"
-        f"• 거래량: <b>{last['volume']:.2f}</b>\n"
-        f"• 거래량 평균20: <b>{last['vol_ma20']:.2f}</b>\n"
-        f"• 거래량 비율: <b>{volume_ratio_text}</b>\n"
-        f"• 최근 범위 위치: <b>{range_pos_text}</b>\n"
+        f"🔍 Market Quality\n"
+        f"{line}\n"
+        f"• 거래량: {last['volume']:.2f}\n"
+        f"• 평균: {last['vol_ma20']:.2f}\n"
+        f"• 비율: {volume_ratio_text}{' ⚠️' if result['volume_ratio'] is not None and result['volume_ratio'] < 0.8 else ''}\n"
+        f"• 위치: {position_text}\n\n"
 
-        f"\n{line}\n"
-        f"✅ <b>판단 근거</b>\n"
         f"{line}\n"
-        f"{reasons_text}\n"
+        f"🧠 VIP Insight\n"
+        f"{line}\n"
+        f"{insight}\n\n"
 
-        f"\n{line}\n"
-        f"⚠️ <b>주의 요소</b>\n"
         f"{line}\n"
-        f"{blockers_text}\n"
+        f"⚠️ Risk Factors\n"
+        f"{line}\n"
+        f"{chr(10).join(risk_lines)}\n\n"
 
-        f"\n{line}\n"
-        f"🧠 <b>VIP Market Comment</b>\n"
         f"{line}\n"
-        f"{result['comment']}\n"
-
-        f"\n{line}\n"
-        f"📝 <b>VIP Note</b>\n"
+        f"📝 VIP Note\n"
         f"{line}\n"
-        f"• 본 알림은 자동 진입 지시가 아닌 <b>보조 브리핑</b>입니다.\n"
-        f"• 실제 진입 전 <b>포지션 크기</b>, <b>허용 손실</b>, <b>추가 확인 캔들</b>을 반드시 점검하세요.\n"
-        f"• 거래량이 약할 경우 신호 신뢰도는 낮아질 수 있습니다."
+        f"• 자동매매 신호 아님\n"
+        f"• 포지션 크기 반드시 관리\n"
+        f"• 거래량 없으면 실패 확률 ↑"
     )
 
 
 def build_no_signal_message(result: dict) -> str:
     last = result["last"]
-    line = "<b>━━━━━━━━━━━━━━━━━━</b>"
+    line = "━━━━━━━━━━━━━━━━━━"
     candle_time = last["timestamp"].strftime("%Y-%m-%d %H:%M UTC")
     volume_ratio_text = f"{result['volume_ratio']}배" if result["volume_ratio"] is not None else "계산불가"
 
     return (
-        f"ℹ️ <b>BTC VIP MARKET BRIEFING</b>\n"
+        f"BTC VIP MARKET BRIEFING\n"
         f"{line}\n"
-        f"⚪️ <b>유효 신호 없음</b>\n"
+        f"⚪️ 유효 신호 없음\n\n"
 
-        f"\n{line}\n"
-        f"💠 <b>Market Snapshot</b>\n"
         f"{line}\n"
-        f"• 종목: <b>{SYMBOL}</b>\n"
-        f"• 시간봉: <b>{TIMEFRAME}</b>\n"
-        f"• 캔들시간: <b>{candle_time}</b>\n"
-        f"• 현재가: <b>{last['close']:,.2f}</b>\n"
-
-        f"\n{line}\n"
-        f"📊 <b>Score Snapshot</b>\n"
+        f"💠 Market Snapshot\n"
         f"{line}\n"
-        f"• 롱 점수: <b>{result['score_long']}</b>\n"
-        f"• 숏 점수: <b>{result['score_short']}</b>\n"
-        f"• 거래량 비율: <b>{volume_ratio_text}</b>\n"
+        f"• 종목: {SYMBOL}\n"
+        f"• 시간봉: {TIMEFRAME}\n"
+        f"• 캔들시간: {candle_time}\n"
+        f"• 현재가: {last['close']:,.2f}\n\n"
 
-        f"\n{line}\n"
-        f"🧠 <b>VIP Market Comment</b>\n"
+        f"{line}\n"
+        f"📊 Score Snapshot\n"
+        f"{line}\n"
+        f"• 롱 점수: {result['score_long']}\n"
+        f"• 숏 점수: {result['score_short']}\n"
+        f"• 거래량 비율: {volume_ratio_text}\n\n"
+
+        f"{line}\n"
+        f"🧠 VIP Market Comment\n"
         f"{line}\n"
         f"{result['comment']}"
     )
