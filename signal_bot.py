@@ -106,13 +106,13 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
 
-    # Bollinger
+    # Bollinger Bands
     df["bb_mid"] = df["close"].rolling(20).mean()
     bb_std = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + (2 * bb_std)
     df["bb_lower"] = df["bb_mid"] - (2 * bb_std)
 
-    # Volume MA
+    # Volume average
     df["vol_ma20"] = df["volume"].rolling(20).mean()
 
     # ATR14
@@ -460,8 +460,7 @@ def build_message(result: dict) -> str:
     last = result["last"]
     levels = result["levels"]
 
-    reasons_text = "\n".join([f"• {r}" for r in result["reasons"]]) if result["reasons"] else "• 없음"
-    blockers_text = "\n".join([f"• {b}" for b in result["blockers"]]) if result["blockers"] else "• 없음"
+    line = "<b>━━━━━━━━━━━━━━━━━━</b>"
 
     candle_time = last["timestamp"].strftime("%Y-%m-%d %H:%M UTC")
     volume_ratio_text = f"{result['volume_ratio']}배" if result["volume_ratio"] is not None else "계산불가"
@@ -501,31 +500,42 @@ def build_message(result: dict) -> str:
         title = "ℹ️ <b>BTC VIP MARKET BRIEFING</b>"
         signal_badge = "⚪️ <b>중립</b>"
 
+    reasons_text = "\n".join([f"• {r}" for r in result["reasons"]]) if result["reasons"] else "• 없음"
+    blockers_text = "\n".join([f"• {b}" for b in result["blockers"]]) if result["blockers"] else "• 없음"
+
     return (
         f"{title}\n"
-        f"<b>━━━━━━━━━━━━━━━━━━</b>\n"
+        f"{line}\n"
         f"{signal_badge} | 등급: <b>{result['grade']}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"💠 <b>Market Snapshot</b>\n"
+        f"{line}\n"
         f"• 종목: <b>{SYMBOL}</b>\n"
         f"• 시간봉: <b>{TIMEFRAME}</b>\n"
         f"• 캔들시간: <b>{candle_time}</b>\n"
         f"• 현재가: <b>{last['close']:,.2f}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"📊 <b>Signal Score</b>\n"
+        f"{line}\n"
         f"• 최종 점수: <b>{result['final_score']}</b>\n"
         f"• 롱 점수: <b>{result['score_long']}</b>\n"
         f"• 숏 점수: <b>{result['score_short']}</b>\n"
         f"• 신호 단계: <b>{result['level']}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"📌 <b>Trade Plan</b>\n"
+        f"{line}\n"
         f"• 진입 기준가: <b>{entry:,.2f}</b>\n"
         f"• 손절가: <b>{stop:,.2f}</b> ({stop_move})\n"
         f"• 1차 목표가: <b>{target1:,.2f}</b> ({t1_move})\n"
         f"• 2차 목표가: <b>{target2:,.2f}</b> ({t2_move})\n"
         f"• 예상 RR(1차): <b>{levels['rr1']}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"📈 <b>Core Indicators</b>\n"
+        f"{line}\n"
         f"• RSI14: <b>{last['rsi14']:.2f}</b>\n"
         f"• EMA20: <b>{last['ema20']:,.2f}</b>\n"
         f"• EMA50: <b>{last['ema50']:,.2f}</b>\n"
@@ -533,23 +543,33 @@ def build_message(result: dict) -> str:
         f"• MACD: <b>{last['macd']:.4f}</b>\n"
         f"• MACD Signal: <b>{last['macd_signal']:.4f}</b>\n"
         f"• ATR14: <b>{levels['atr']:.2f}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"🔍 <b>Market Quality Check</b>\n"
+        f"{line}\n"
         f"• 거래량: <b>{last['volume']:.2f}</b>\n"
         f"• 거래량 평균20: <b>{last['vol_ma20']:.2f}</b>\n"
         f"• 거래량 비율: <b>{volume_ratio_text}</b>\n"
         f"• 최근 범위 위치: <b>{range_pos_text}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"✅ <b>판단 근거</b>\n"
+        f"{line}\n"
         f"{reasons_text}\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"⚠️ <b>주의 요소</b>\n"
+        f"{line}\n"
         f"{blockers_text}\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"🧠 <b>VIP Market Comment</b>\n"
+        f"{line}\n"
         f"{result['comment']}\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"📝 <b>VIP Note</b>\n"
+        f"{line}\n"
         f"• 본 알림은 자동 진입 지시가 아닌 <b>보조 브리핑</b>입니다.\n"
         f"• 실제 진입 전 <b>포지션 크기</b>, <b>허용 손실</b>, <b>추가 확인 캔들</b>을 반드시 점검하세요.\n"
         f"• 거래량이 약할 경우 신호 신뢰도는 낮아질 수 있습니다."
@@ -558,26 +578,33 @@ def build_message(result: dict) -> str:
 
 def build_no_signal_message(result: dict) -> str:
     last = result["last"]
+    line = "<b>━━━━━━━━━━━━━━━━━━</b>"
     candle_time = last["timestamp"].strftime("%Y-%m-%d %H:%M UTC")
     volume_ratio_text = f"{result['volume_ratio']}배" if result["volume_ratio"] is not None else "계산불가"
 
     return (
         f"ℹ️ <b>BTC VIP MARKET BRIEFING</b>\n"
-        f"<b>━━━━━━━━━━━━━━━━━━</b>\n"
+        f"{line}\n"
         f"⚪️ <b>유효 신호 없음</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"💠 <b>Market Snapshot</b>\n"
+        f"{line}\n"
         f"• 종목: <b>{SYMBOL}</b>\n"
         f"• 시간봉: <b>{TIMEFRAME}</b>\n"
         f"• 캔들시간: <b>{candle_time}</b>\n"
         f"• 현재가: <b>{last['close']:,.2f}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"📊 <b>Score Snapshot</b>\n"
+        f"{line}\n"
         f"• 롱 점수: <b>{result['score_long']}</b>\n"
         f"• 숏 점수: <b>{result['score_short']}</b>\n"
         f"• 거래량 비율: <b>{volume_ratio_text}</b>\n"
-        f"\n"
+
+        f"\n{line}\n"
         f"🧠 <b>VIP Market Comment</b>\n"
+        f"{line}\n"
         f"{result['comment']}"
     )
 
