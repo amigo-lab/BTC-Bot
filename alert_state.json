@@ -1,7 +1,7 @@
 {
-  "last_alert_key": "BTC/USD|15m|2026-04-26 03:15|SHORT|WATCH",
-  "last_signal": "SHORT",
-  "last_level": "WATCH",
-  "last_grade": "B",
-  "last_candle_time": "2026-04-26 03:15:00 UTC"
+  "last_alert_key": "BTC/USD|15m|2026-04-26 05:45|NONE|NONE",
+  "last_signal": "NONE",
+  "last_level": "NONE",
+  "last_grade": "C",
+  "last_candle_time": "2026-04-26 05:45:00 UTC"
 }
