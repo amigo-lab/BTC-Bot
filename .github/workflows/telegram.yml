@@ -3,7 +3,7 @@ name: BTC VIP Briefing V4
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 0,12 * * *"
 
 permissions:
   contents: write
